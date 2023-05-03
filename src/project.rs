@@ -9,7 +9,7 @@ use kube::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tracing::info;
+use tracing::{debug, info};
 
 pub const NAMESPACE_ANNOTATION: &str = "field.cattle.io/projectId";
 const KEY_PROPAGATION_PREFIX: &str = "propagate.";
@@ -37,6 +37,10 @@ pub struct ProjectSpec {
 impl Project {
     /// Find all the Namespace that belong to the Project
     pub async fn namespaces(&self, client: Client) -> Result<Vec<Namespace>> {
+        debug!(
+            project = self.name_unchecked(),
+            "finding list of namespaces that belong to project"
+        );
         let namespaces: Api<Namespace> = Api::all(client);
         let lp = ListParams::default().labels(
             format!(

@@ -19,7 +19,7 @@ use std::{
     sync::Arc,
 };
 use tokio::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 lazy_static! {
     static ref RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -72,8 +72,9 @@ async fn reconcile(project: Arc<Project>, ctx: Arc<Context>) -> Result<Action> {
     Ok(Action::requeue(*RECONCILIATION_INTERVAL))
 }
 
-fn error_policy(_project: Arc<Project>, error: &Error, _ctx: Arc<Context>) -> Action {
-    warn!("reconcile failed: {error:?}");
+fn error_policy(project: Arc<Project>, error: &Error, ctx: Arc<Context>) -> Action {
+    let is_downstream_cluster = ctx.upstream_cluster_ctx.is_some();
+    error!(project = ?project, is_downstream_cluster, "reconcile failed: {error:?}");
     Action::requeue(*RECONCILIATION_INTERVAL)
 }
 

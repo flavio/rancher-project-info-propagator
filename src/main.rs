@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let level_filter = cli.log_level;
     let filter_layer = EnvFilter::from_default_env()
         .add_directive(level_filter.into())
+        .add_directive("rustls=off".parse().unwrap()) // this crate generates tracing events we don't care about
         .add_directive("hyper=off".parse().unwrap()) // this crate generates tracing events we don't care about
         .add_directive("tower=off".parse().unwrap()); // this crate generates tracing events we don't care about
     tracing_subscriber::registry()
