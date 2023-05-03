@@ -3,8 +3,9 @@ use crate::project::Project;
 
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Namespace;
+use kube::config::Kubeconfig;
 use kube::{
-    api::{Api, ListParams, ResourceExt},
+    api::{Api, ResourceExt},
     client::Client,
     runtime::{
         controller::{Action, Controller},
@@ -12,15 +13,34 @@ use kube::{
         watcher,
     },
 };
-use std::sync::Arc;
+use lazy_static::lazy_static;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
+
+lazy_static! {
+    static ref RECONCILIATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
+}
+
+#[derive(Clone)]
+pub struct UpstreamClusterContext {
+    /// Kubernetes client for the upstream cluster
+    pub client_upstream: Client,
+
+    /// ID of the downstream cluster
+    pub cluster_id: String,
+}
 
 // Context for our reconciler
 #[derive(Clone)]
 pub struct Context {
-    /// Kubernetes client
-    pub client: Client,
+    /// Kubernetes client for the local cluster
+    pub client_local: Client,
+
+    pub upstream_cluster_ctx: Option<UpstreamClusterContext>,
 }
 
 async fn reconcile(project: Arc<Project>, ctx: Arc<Context>) -> Result<Action> {
@@ -33,57 +53,78 @@ async fn reconcile(project: Arc<Project>, ctx: Arc<Context>) -> Result<Action> {
     );
     if project.metadata.deletion_timestamp.is_some() {
         // project has been deleted, nothing to do
-        return Ok(Action::requeue(Duration::from_secs(5 * 60)));
+        return Ok(Action::requeue(*RECONCILIATION_INTERVAL));
     }
 
-    let namespaces = project.namespaces(ctx.client.clone()).await?;
-    println!(
-        "Project {}/{} has these children:",
-        project.namespace().unwrap(),
-        project.name_unchecked(),
-    );
-    if namespaces.is_empty() {
-        println!("none");
-    }
+    let namespaces = project.namespaces(ctx.client_local.clone()).await?;
     for ns in namespaces {
-        println!("- {}", ns.name_unchecked());
-        if let Err(e) = project.propagate_labels(&ns, ctx.client.clone()).await {
+        if let Err(e) = project
+            .propagate_labels(&ns, ctx.client_local.clone())
+            .await
+        {
             error!(error = ?e, namespace = ns.name_unchecked(), "Cannot propagate labels to namespace");
         }
     }
 
     // If no events were received, check back every 5 minutes
-    Ok(Action::requeue(Duration::from_secs(5 * 60)))
+    Ok(Action::requeue(*RECONCILIATION_INTERVAL))
 }
 
-fn error_policy(project: Arc<Project>, error: &Error, ctx: Arc<Context>) -> Action {
-    warn!("reconcile failed: {:?}", error);
-    Action::requeue(Duration::from_secs(5 * 60))
+fn error_policy(_project: Arc<Project>, error: &Error, _ctx: Arc<Context>) -> Action {
+    warn!("reconcile failed: {error:?}");
+    Action::requeue(*RECONCILIATION_INTERVAL)
 }
 
 /// Initialize the controller and shared state (given the crd is installed)
-pub async fn run() {
-    let client = Client::try_default()
-        .await
-        .expect("failed to create kube Client");
-    let projects = Api::<Project>::all(client.clone());
-    if let Err(e) = projects.list(&ListParams::default().limit(1)).await {
-        error!("CRD is not queryable; {e:?}. Is the CRD installed?");
-        std::process::exit(1);
+pub async fn run(kubeconfig_upstream: Option<PathBuf>, cluster_id: Option<String>) -> Result<()> {
+    if kubeconfig_upstream.is_some() != cluster_id.is_some() {
+        panic!("Non matching kubeconfig_upstream and cluster_id, clap should prevent that from happening");
     }
+
+    let upstream_cluster_ctx = match kubeconfig_upstream {
+        None => None,
+        Some(path) => {
+            let client_upstream = create_upstream_client(path.as_path()).await?;
+            Some(UpstreamClusterContext {
+                client_upstream,
+                cluster_id: cluster_id.unwrap(),
+            })
+        }
+    };
+
+    let client_local = Client::try_default().await.map_err(Error::Kube)?;
+
+    let projects = match &upstream_cluster_ctx {
+        Some(upstream_ctx) => {
+            info!(
+                cluster_id = upstream_ctx.cluster_id,
+                "monitoring Projects defined inside of upstream cluster"
+            );
+            Api::<Project>::namespaced(
+                upstream_ctx.client_upstream.clone(),
+                &upstream_ctx.cluster_id,
+            )
+        }
+        None => {
+            info!("monitoring Projects defined inside of local cluster");
+            Api::<Project>::all(client_local.clone())
+        }
+    };
+
     let context = Context {
-        client: client.clone(),
+        client_local: client_local.clone(),
+        upstream_cluster_ctx,
     };
 
     Controller::new(projects, watcher::Config::default().any_semantic())
         .watches(
-            Api::<Namespace>::all(client),
+            Api::<Namespace>::all(client_local),
             watcher::Config::default().any_semantic(),
             |ns| {
                 if let Some(project_annotation) =
                     ns.annotations().get(crate::project::NAMESPACE_ANNOTATION)
                 {
-                    if let Some((prj_ns, prj_name)) = parse_project_annotation(project_annotation) {
+                    if let Some((prj_ns, prj_name)) = project_annotation.split_once(':') {
                         debug!(
                             namespace = ns.name_unchecked(),
                             project_namespace = prj_ns,
@@ -101,8 +142,19 @@ pub async fn run() {
         .filter_map(|x| async move { std::result::Result::ok(x) })
         .for_each(|_| futures::future::ready(()))
         .await;
+
+    Ok(())
 }
 
-fn parse_project_annotation(annotation: &String) -> Option<(&str, &str)> {
-    annotation.split_once(':')
+async fn create_upstream_client(kubeconfig_path: &Path) -> Result<Client> {
+    let kubeconfig = Kubeconfig::read_from(kubeconfig_path).map_err(Error::Kubeconfig)?;
+
+    let client_config = kube::Config::from_custom_kubeconfig(
+        kubeconfig,
+        &kube::config::KubeConfigOptions::default(),
+    )
+    .await
+    .map_err(Error::Kubeconfig)?;
+
+    Client::try_from(client_config).map_err(Error::Kube)
 }

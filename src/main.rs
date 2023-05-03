@@ -1,26 +1,17 @@
+mod cli;
 mod controller;
 mod errors;
 mod project;
 
+use clap::Parser;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{
-    filter::{EnvFilter, LevelFilter},
-    fmt,
-};
+use tracing_subscriber::{filter::EnvFilter, fmt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = cli::Cli::parse();
     // setup logging
-    //let verbose = matches
-    //    .get_one::<bool>("verbose")
-    //    .unwrap_or(&false)
-    //    .to_owned();
-    let verbose = true;
-    let level_filter = if verbose {
-        LevelFilter::DEBUG
-    } else {
-        LevelFilter::INFO
-    };
+    let level_filter = cli.log_level;
     let filter_layer = EnvFilter::from_default_env()
         .add_directive(level_filter.into())
         .add_directive("hyper=off".parse().unwrap()) // this crate generates tracing events we don't care about
@@ -30,8 +21,7 @@ async fn main() -> anyhow::Result<()> {
         .with(fmt::layer().with_writer(std::io::stderr))
         .init();
 
-    let controller = controller::run();
+    controller::run(cli.kubeconfig_upstream, cli.cluster_id).await?;
 
-    controller.await;
     Ok(())
 }

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tracing::info;
 
-pub const NAMESPACE_ANNOTATION: &'static str = "field.cattle.io/projectId";
-const KEY_PROPAGATION_PREFIX: &'static str = "propagate.";
+pub const NAMESPACE_ANNOTATION: &str = "field.cattle.io/projectId";
+const KEY_PROPAGATION_PREFIX: &str = "propagate.";
 
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[cfg_attr(test, derive(Default))]
@@ -73,7 +73,7 @@ impl Project {
                     .cloned()
                     .collect()
             })
-            .map_err(|e| Error::KubeError(e))
+            .map_err(Error::Kube)
     }
 
     pub async fn propagate_labels(&self, namespace: &Namespace, client: Client) -> Result<()> {
@@ -92,7 +92,7 @@ impl Project {
             namespaces
                 .patch(&namespace.name_unchecked(), &params, &patch)
                 .await
-                .map_err(|e| Error::KubeError(e))?;
+                .map_err(Error::Kube)?;
             info!(namespace = namespace.name_unchecked(), "Labels propagated");
         };
 
@@ -110,7 +110,7 @@ fn merge_labels(
     for (key, value) in project_labels.iter() {
         if key.starts_with(KEY_PROPAGATION_PREFIX) {
             let patched_key = key.strip_prefix(KEY_PROPAGATION_PREFIX).ok_or_else(|| {
-                Error::InternalError("strip prefix should always return something".to_string())
+                Error::Internal("strip prefix should always return something".to_string())
             })?;
             namespace_labels
                 .entry(patched_key.to_owned())
