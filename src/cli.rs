@@ -8,6 +8,7 @@ pub struct Cli {
     /// Log level
     #[arg(
         long,
+        env,
         default_value_t = LevelFilter::INFO,
         value_parser = clap::builder::PossibleValuesParser::new(["trace", "debug", "info", "warn", "error"])
             .map(|s| s.parse::<LevelFilter>().unwrap()),
@@ -15,11 +16,11 @@ pub struct Cli {
     pub log_level: LevelFilter,
 
     /// ID of the cluster. To be used when deployed inside of a downstream cluster
-    #[clap(long, required(false), requires = "kubeconfig_upstream")]
+    #[clap(long, env, required(false), requires = "kubeconfig_upstream")]
     pub cluster_id: Option<String>,
 
     /// Path to the kubeconfig file used to connect to the upstream cluster. To be used when
     /// deployed inside of a downstream cluster
-    #[clap(long, required(false), requires = "cluster_id")]
+    #[clap(long, env, required(false), requires = "cluster_id")]
     pub kubeconfig_upstream: Option<std::path::PathBuf>,
 }

@@ -40,6 +40,8 @@ pub struct Context {
     /// Kubernetes client for the local cluster
     pub client_local: Client,
 
+    /// Context data of the upstream cluster - Used only when the controller is deployed inside of
+    /// a downstream cluster
     pub upstream_cluster_ctx: Option<UpstreamClusterContext>,
 }
 

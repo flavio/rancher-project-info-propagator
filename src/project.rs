@@ -133,3 +133,82 @@ fn merge_labels(
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::*;
+    use serde_json::json;
+
+    #[rstest]
+    #[case(
+        // prj label is already defined inside of ns with the same value
+        json!({
+            "propagate.hello": "world",
+            "foo": "bar",
+        }),
+        Some(json!({
+            "hello": "world",
+            "ciao": "mondo",
+        })),
+        None,
+    )]
+    #[case(
+        // prj label is already defined inside of ns but with different value
+        json!({
+            "propagate.hello": "world",
+            "foo": "bar",
+        }),
+        Some(json!({
+            "hello": "world2",
+            "ciao": "mondo",
+        })),
+        Some(json!({
+            "hello": "world",
+            "ciao": "mondo",
+        })),
+    )]
+    #[case(
+        // no labels to propagate from the prj
+        json!({
+            "foo": "bar",
+        }),
+        Some(json!({
+            "ciao": "mondo",
+        })),
+        None,
+    )]
+    #[case(
+        // label is missing from the ns
+        json!({
+            "propagate.hi": "world",
+            "foo": "bar",
+        }),
+        None,
+        Some(json!({
+            "hi": "world",
+        })),
+    )]
+    fn test_merge_labels(
+        #[case] prj_labels: serde_json::Value,
+        #[case] ns_labels: Option<serde_json::Value>,
+        #[case] expected: Option<serde_json::Value>,
+    ) {
+        let project_labels: BTreeMap<String, String> =
+            serde_json::from_value(prj_labels).expect("cannot deserialize project labels");
+
+        let namespace_labels: BTreeMap<String, String> = ns_labels.map_or_else(
+            || BTreeMap::new(),
+            |labels| serde_json::from_value(labels).expect("cannot deserialize namespace labels"),
+        );
+
+        let expected_labels: Option<BTreeMap<String, String>> = expected.map(|labels| {
+            serde_json::from_value(labels).expect("cannot deserialize expected labels")
+        });
+
+        let actual =
+            merge_labels(&project_labels, &namespace_labels).expect("merge should not fail");
+
+        assert_eq!(expected_labels, actual);
+    }
+}
