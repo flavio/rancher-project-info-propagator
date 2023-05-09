@@ -1,19 +1,20 @@
 use crate::errors::{Error, Result};
 use k8s_openapi::api::core::v1::Namespace;
 use kube::{
-    api::{Api, ListParams, Patch, ResourceExt},
+    api::{Api, ListParams, ResourceExt},
     client::Client,
-    core::{params::PatchParams, ObjectMeta},
     CustomResource,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tracing::{debug, info};
+use tracing::debug;
 
 pub const NAMESPACE_ANNOTATION: &str = "field.cattle.io/projectId";
 const KEY_PROPAGATION_PREFIX: &str = "propagate.";
 
+/// Stripped down `Spec` of Rancher Project objects. Only the relevant
+/// fields are defined.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[cfg_attr(test, derive(Default))]
 #[kube(
@@ -80,139 +81,80 @@ impl Project {
             .map_err(Error::Kube)
     }
 
-    pub async fn propagate_labels(&self, namespace: &Namespace, client: Client) -> Result<()> {
-        if let Some(new_labels) = merge_labels(self.labels(), namespace.labels())? {
-            let ns = Namespace {
-                metadata: ObjectMeta {
-                    labels: Some(new_labels),
-                    ..ObjectMeta::default()
-                },
-                ..Namespace::default()
-            };
-
-            let patch = Patch::Apply(ns);
-            let namespaces: Api<Namespace> = Api::all(client);
-            let params = PatchParams::apply("racher-project-info-propagator").force();
-            namespaces
-                .patch(&namespace.name_unchecked(), &params, &patch)
-                .await
-                .map_err(Error::Kube)?;
-            info!(namespace = namespace.name_unchecked(), "Labels propagated");
-        };
-
-        Ok(())
-    }
-}
-
-fn merge_labels(
-    project_labels: &BTreeMap<String, String>,
-    namespace_labels: &BTreeMap<String, String>,
-) -> Result<Option<BTreeMap<String, String>>> {
-    let mut labels_changed = false;
-    let mut namespace_labels = namespace_labels.clone();
-
-    for (key, value) in project_labels.iter() {
-        if key.starts_with(KEY_PROPAGATION_PREFIX) {
-            let patched_key = key.strip_prefix(KEY_PROPAGATION_PREFIX).ok_or_else(|| {
-                Error::Internal("strip prefix should always return something".to_string())
-            })?;
-            namespace_labels
-                .entry(patched_key.to_owned())
-                .and_modify(|v| {
-                    if v != value {
-                        *v = value.to_owned();
-                        labels_changed = true;
-                    }
-                })
-                .or_insert_with(|| {
-                    labels_changed = true;
-                    value.to_owned()
-                });
-        }
-    }
-
-    if labels_changed {
-        Ok(Some(namespace_labels))
-    } else {
-        Ok(None)
+    /// List of labels that have to be propagated to all the Namespace that
+    /// belong to the Project.
+    ///
+    /// Note: the label keys are stripped of the `propagate.` prefix
+    pub fn relevant_labels(&self) -> BTreeMap<String, String> {
+        self.labels()
+            .iter()
+            .filter_map(|(k, v)| {
+                if k.starts_with(KEY_PROPAGATION_PREFIX) {
+                    let patched_key = k
+                        .strip_prefix(KEY_PROPAGATION_PREFIX)
+                        .expect("stripping the prefix should never fail");
+                    Some((patched_key.to_string(), v.to_owned()))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
     use rstest::*;
     use serde_json::json;
 
     #[rstest]
     #[case(
+        json!({
+            "propagate.hello": "world",
+            "foo": "bar",
+        }),
+        json!({
+            "hello": "world",
+        }),
+    )]
+    #[case(
         // prj label is already defined inside of ns with the same value
         json!({
-            "propagate.hello": "world",
             "foo": "bar",
         }),
-        Some(json!({
-            "hello": "world",
-            "ciao": "mondo",
-        })),
-        None,
+        json!({
+        }),
     )]
     #[case(
-        // prj label is already defined inside of ns but with different value
+        // prj label is already defined inside of ns with the same value
         json!({
-            "propagate.hello": "world",
-            "foo": "bar",
         }),
-        Some(json!({
-            "hello": "world2",
-            "ciao": "mondo",
-        })),
-        Some(json!({
-            "hello": "world",
-            "ciao": "mondo",
-        })),
-    )]
-    #[case(
-        // no labels to propagate from the prj
         json!({
-            "foo": "bar",
         }),
-        Some(json!({
-            "ciao": "mondo",
-        })),
-        None,
     )]
-    #[case(
-        // label is missing from the ns
-        json!({
-            "propagate.hi": "world",
-            "foo": "bar",
-        }),
-        None,
-        Some(json!({
-            "hi": "world",
-        })),
-    )]
-    fn test_merge_labels(
+    fn test_relevant_labels(
         #[case] prj_labels: serde_json::Value,
-        #[case] ns_labels: Option<serde_json::Value>,
-        #[case] expected: Option<serde_json::Value>,
+        #[case] expected_labels: serde_json::Value,
     ) {
         let project_labels: BTreeMap<String, String> =
             serde_json::from_value(prj_labels).expect("cannot deserialize project labels");
 
-        let namespace_labels: BTreeMap<String, String> = ns_labels.map_or_else(
-            || BTreeMap::new(),
-            |labels| serde_json::from_value(labels).expect("cannot deserialize namespace labels"),
-        );
+        let expected_labels: BTreeMap<String, String> =
+            serde_json::from_value(expected_labels).expect("cannot deserialize expected labels");
 
-        let expected_labels: Option<BTreeMap<String, String>> = expected.map(|labels| {
-            serde_json::from_value(labels).expect("cannot deserialize expected labels")
-        });
+        let project = Project {
+            metadata: ObjectMeta {
+                labels: Some(project_labels),
+                ..Default::default()
+            },
+            spec: ProjectSpec {
+                ..Default::default()
+            },
+        };
 
-        let actual =
-            merge_labels(&project_labels, &namespace_labels).expect("merge should not fail");
-
-        assert_eq!(expected_labels, actual);
+        let actual_labels = project.relevant_labels();
+        assert_eq!(actual_labels, expected_labels);
     }
 }

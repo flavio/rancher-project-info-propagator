@@ -23,4 +23,9 @@ pub struct Cli {
     /// deployed inside of a downstream cluster
     #[clap(long, env, required(false), requires = "cluster_id")]
     pub kubeconfig_upstream: Option<std::path::PathBuf>,
+
+    /// Path where the sqlite database is going to be saved
+    /// Required when the controller is deployed inside of a downstream cluster
+    #[clap(long, env, required(false), default_value_t = String::from("."))]
+    pub data_path: String,
 }
