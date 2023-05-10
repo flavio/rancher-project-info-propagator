@@ -248,8 +248,12 @@ inside of an [`emptyDir`](https://kubernetes.io/docs/concepts/storage/volumes/#e
 
 ## Missing items
 
-This is a POC, some changes have still to be done.
+This is a POC, some changes have still to be done, these are the major ones:
 
-TODO: link to issues
+* [Create helm chart](https://github.com/flavio/rancher-project-info-propagator/issues/1)
+* [GitHub action](https://github.com/flavio/rancher-project-info-propagator/issues/2):
+  introuduce more automation and publish the container image to ghcr.io
+* [Replace Namespace controller with Kubewarden policy](https://github.com/flavio/rancher-project-info-propagator/issues/3)
+
 
 
