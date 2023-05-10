@@ -131,7 +131,9 @@ impl Context {
                 upstream_ctx.client_upstream.clone(),
                 &upstream_ctx.cluster_id,
             ),
-            None => kube::Api::<crate::project::Project>::all(self.client_local.clone()),
+            None => {
+                kube::Api::<crate::project::Project>::namespaced(self.client_local.clone(), "local")
+            }
         }
     }
 
